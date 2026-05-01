@@ -1,0 +1,12 @@
+# Inventory data files (stay on your machine)
+*.xlsx
+*.xlsm
+*.xls
+locations.json
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
