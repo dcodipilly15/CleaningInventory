@@ -565,12 +565,9 @@ def ts():
 
 CANCEL_REFRESH_JS = """<script>
 document.addEventListener('DOMContentLoaded',function(){
-  function stopRefresh(){
-    var m=document.querySelector('meta[http-equiv="refresh"]');
-    if(m)m.parentNode.removeChild(m);
-  }
   document.querySelectorAll('input,select,textarea').forEach(function(el){
     el.addEventListener('focus',stopRefresh);
+    el.addEventListener('change',stopRefresh);
   });
 });
 </script>"""
@@ -670,7 +667,6 @@ def build_standalone_checkout(key, items, errors=None):
     rows = checkout_rows(items, f"/{key}")
     return f"""<!DOCTYPE html><html><head>
   <title>Checkout — {cfg['label']}</title><meta charset="utf-8">
-  {META_REFRESH}
   <style>{SHARED_CSS}</style>
 </head><body>
   <div class="card">
@@ -699,7 +695,7 @@ def build_standalone_checkout(key, items, errors=None):
       </form>
     </div>
   </div>
-  {TOGGLE_JS}{CANCEL_REFRESH_JS}
+  {TOGGLE_JS}
 </body></html>"""
 
 
@@ -979,7 +975,6 @@ def build_admin_checkout(key, items, errors=None):
     rows = checkout_rows(items, f"/{key}")
     return f"""<!DOCTYPE html><html><head>
   <title>Admin Checkout — {cfg['label']}</title><meta charset="utf-8">
-  {META_REFRESH}
   <style>{SHARED_CSS}</style>
 </head><body>
   <div class="card">
@@ -1005,7 +1000,7 @@ def build_admin_checkout(key, items, errors=None):
       </form>
     </div>
   </div>
-  {TOGGLE_JS}{CANCEL_REFRESH_JS}
+  {TOGGLE_JS}
 </body></html>"""
 
 
