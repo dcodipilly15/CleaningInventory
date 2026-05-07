@@ -19,7 +19,8 @@ SCRIPT_DIR     = os.path.dirname(os.path.abspath(__file__))
 PORT           = 8765
 ADMIN_PORT     = 8766
 LOCATIONS_FILE = os.path.join(SCRIPT_DIR, "locations.json")
-COMBINED_FILE  = os.path.join(SCRIPT_DIR, "Inventory.xlsx")
+COMBINED_FILE  = os.path.expanduser(
+    "~/Library/CloudStorage/OneDrive-Tesla/Book3.xlsx")
 
 # Default supplies used when creating a new location
 TEMPLATE_ITEMS = [
@@ -59,22 +60,34 @@ _OLD_CONFIGS = {
     },
 }
 
-# Default config pointing to the combined file
+# Default config pointing to the combined file.
+# Book3 layout: col 1=Item, col 2=Count, col 3=Min Count, col 4=Unit Type
 _HARDCODED = {
-    "milmont": {
-        "label":    "Milmont",
-        "file":     COMBINED_FILE,
-        "sheet":    "Milmont",
-        "qty_col":  2,
-        "unit_col": 3,
-        "keep_vba": False,
-    },
     "3k": {
         "label":    "3K",
         "file":     COMBINED_FILE,
         "sheet":    "3K",
         "qty_col":  2,
-        "unit_col": 3,
+        "min_col":  3,
+        "unit_col": 4,
+        "keep_vba": False,
+    },
+    "milmont": {
+        "label":    "Milmont",
+        "file":     COMBINED_FILE,
+        "sheet":    "Milmont",
+        "qty_col":  2,
+        "min_col":  3,
+        "unit_col": 4,
+        "keep_vba": False,
+    },
+    "austin": {
+        "label":    "Austin",
+        "file":     COMBINED_FILE,
+        "sheet":    "Austin",
+        "qty_col":  2,
+        "min_col":  3,
+        "unit_col": 4,
         "keep_vba": False,
     },
 }
@@ -84,11 +97,20 @@ def _init_inventories():
     if os.path.exists(LOCATIONS_FILE):
         with open(LOCATIONS_FILE) as f:
             data = json.load(f)
-        # Upgrade milmont/3k entries to combined file if it now exists
-        if os.path.exists(COMBINED_FILE):
-            for key in ("milmont", "3k"):
-                if key in data and key in _HARDCODED:
-                    data[key] = _HARDCODED[key]
+        # Re-pin standard locations whose config has drifted from the new defaults
+        # (different file path, missing min_col, or stale unit_col).
+        changed = False
+        for key, default in _HARDCODED.items():
+            existing = data.get(key)
+            if (not existing
+                    or existing.get("file") != COMBINED_FILE
+                    or existing.get("unit_col") != default["unit_col"]
+                    or "min_col" not in existing):
+                data[key] = default
+                changed = True
+        if changed:
+            with open(LOCATIONS_FILE, "w") as f:
+                json.dump(data, f, indent=2)
         return data
     return dict(_HARDCODED)
 
@@ -161,20 +183,22 @@ def create_location_sheet(label):
         try:
             items = get_items(cfg)
             if items:
-                master = [(item["name"], item["unit"]) for item in items]
+                master = [(item["name"], item["unit"], item.get("min_count", 2)) for item in items]
                 break
         except Exception:
             continue
     if not master:
-        master = [(name, unit) for name, _qty, unit in TEMPLATE_ITEMS]
+        master = [(name, unit, 2) for name, _qty, unit in TEMPLATE_ITEMS]
 
     wb = openpyxl.load_workbook(COMBINED_FILE)
     ws = wb.create_sheet(label)
-    ws.cell(1, 1).value = None
-    for i, (name, unit) in enumerate(master, start=2):
+    for c, h in enumerate(["Item", "Count", "Min Count", "Unit Type"], start=1):
+        ws.cell(1, c).value = h
+    for i, (name, unit, min_count) in enumerate(master, start=2):
         ws.cell(i, 1).value = name
         ws.cell(i, 2).value = 0
-        ws.cell(i, 3).value = unit
+        ws.cell(i, 3).value = min_count
+        ws.cell(i, 4).value = unit
     wb.save(COMBINED_FILE)
 
 
@@ -207,7 +231,8 @@ def migrate_separate_locations():
             "file":     COMBINED_FILE,
             "sheet":    label,
             "qty_col":  2,
-            "unit_col": 3,
+            "min_col":  3,
+            "unit_col": 4,
             "keep_vba": False,
         }
         changed = True
@@ -433,6 +458,7 @@ def load_inventory(cfg):
     wb = openpyxl.load_workbook(cfg["file"], keep_vba=False, data_only=True)
     ws = wb[cfg["sheet"]]
     col = cfg["qty_col"]
+    min_col = cfg.get("min_col")
     items = []
     current_section = ""
     for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
@@ -449,14 +475,23 @@ def load_inventory(cfg):
             raw_unit = row[cfg["unit_col"] - 1]
             if raw_unit:
                 unit = str(raw_unit).strip()
+        min_count = 2
+        if min_col and len(row) >= min_col:
+            raw_min = row[min_col - 1]
+            try:
+                if raw_min is not None:
+                    min_count = int(raw_min)
+            except (TypeError, ValueError):
+                pass
         items.append({
-            "name":    name_str,
-            "qty":     qty,
-            "unit":    unit,
-            "display": str(int(qty)) if isinstance(raw_qty, float) else (str(raw_qty) if raw_qty is not None else "0"),
-            "row":     row_idx,
-            "fmt":     fmt,
-            "section": current_section,
+            "name":      name_str,
+            "qty":       qty,
+            "unit":      unit,
+            "display":   str(int(qty)) if isinstance(raw_qty, float) else (str(raw_qty) if raw_qty is not None else "0"),
+            "row":       row_idx,
+            "fmt":       fmt,
+            "section":   current_section,
+            "min_count": min_count,
         })
     return items
 
@@ -493,6 +528,8 @@ def save_restock(cfg, items, additions, new_item):
         last = ws.max_row
         ws.cell(last + 1, 1).value = new_item["name"]
         ws.cell(last + 1, col).value = new_item["qty"]
+        if cfg.get("min_col"):
+            ws.cell(last + 1, cfg["min_col"]).value = new_item.get("min_count", 2)
         if new_item.get("unit") and cfg.get("unit_col"):
             ws.cell(last + 1, cfg["unit_col"]).value = new_item["unit"]
     wb.save(cfg["file"])
@@ -533,7 +570,7 @@ def checkout_rows(items, action_prefix):
             last_sec = item["section"]
             rows += f'<tr class="sec-row"><td colspan="4">{last_sec}</td></tr>'
         bg = "#f5f8fd" if i % 2 == 0 else "#fff"
-        low = " style='color:#cc0000;font-weight:bold'" if item["qty"] <= 2 else ""
+        low = " style='color:#cc0000;font-weight:bold'" if item["qty"] <= item.get("min_count", 2) else ""
         rows += f"""<tr style="background:{bg}" data-item="{item['name']}">
           <td style="padding:9px 8px;width:36px">
             <input type="checkbox" id="c{i}" name="check_{i}" onchange="tog({i})"
@@ -850,8 +887,8 @@ def build_admin_overview(message=None, errors=None):
                 section_order.append(sec)
             if item["name"] not in all_sections[sec]:
                 all_sections[sec][item["name"]] = {}
-            all_sections[sec][item["name"]][key] = (item["display"], item["qty"], item["unit"], item["fmt"])
-            if item["qty"] <= 2:
+            all_sections[sec][item["name"]][key] = (item["display"], item["qty"], item["unit"], item["fmt"], item["min_count"])
+            if item["qty"] <= item["min_count"]:
                 unit_str = (' ' + item["unit"]) if item["unit"] else ''
                 low_stock.append((item["name"], cfg["label"], item["qty"], unit_str))
 
@@ -866,9 +903,9 @@ def build_admin_overview(message=None, errors=None):
             cells = ""
             for k in keys:
                 if k in loc_data:
-                    disp, qty, unit, fmt = loc_data[k]
+                    disp, qty, unit, fmt, min_count = loc_data[k]
                     unit_str = (' ' + unit) if unit and fmt != 'text' else ''
-                    style = "color:#cc0000;font-weight:bold" if qty <= 2 else "color:#222"
+                    style = "color:#cc0000;font-weight:bold" if qty <= min_count else "color:#222"
                     cells += f'<td style="padding:8px;text-align:center;font-size:13px;{style}">{disp}{unit_str}</td>'
                 else:
                     cells += '<td style="padding:8px;text-align:center;color:#ccc">—</td>'
@@ -893,7 +930,7 @@ def build_admin_overview(message=None, errors=None):
                     padding:14px 18px;margin-bottom:14px">
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
             <span style="font-size:18px">&#9888;</span>
-            <strong style="font-size:14px;color:#a00">{cfg["label"]} — {len(loc_low)} item(s) at 2 or below</strong>
+            <strong style="font-size:14px;color:#a00">{cfg["label"]} — {len(loc_low)} item(s) at or below min count</strong>
           </div>
           <table style="width:100%;border-collapse:collapse">
             <tr>
@@ -1607,7 +1644,8 @@ class AdminHandler(BaseHandler):
             "file":     COMBINED_FILE,
             "sheet":    label,
             "qty_col":  2,
-            "unit_col": 3,
+            "min_col":  3,
+            "unit_col": 4,
             "keep_vba": False,
         }
         save_locations()
